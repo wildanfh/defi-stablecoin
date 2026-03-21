@@ -28,6 +28,7 @@ pragma solidity ^0.8.19;
 import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
 /*
  * @title DSCEngine
@@ -59,8 +60,16 @@ contract DSCEngine is ReentrancyGuard {
     ///////////////////////
     // State Variables   //
     ///////////////////////
+    uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
+    uint256 private constant PRECISION = 1e18;
+
     mapping(address token => address priceFeed) private sPriceFeeds; // tokenToPriceFeed
     mapping(address user => mapping(address token => uint256 amount)) private sCollateralDeposited; // userToTokenToAmount
+    mapping(address user => uint256 amountDscMinted) private sDSCMinted;
+    address[] private sCollateralTokens;
+
+    address weth;
+    address wbtc;
 
     DecentralizedStableCoin private immutable iDsc;
 
@@ -97,6 +106,7 @@ contract DSCEngine is ReentrancyGuard {
         // For example ETH / IDR, BTC / IDR, etc
         for (uint256 i = 0; i < tokenAddresses.length; i++) {
             sPriceFeeds[tokenAddresses[i]] = priceFeedAddresses[i];
+            sCollateralTokens.push(tokenAddresses[i]);
         }
         iDsc = DecentralizedStableCoin(dscAddress);
     }
@@ -130,11 +140,66 @@ contract DSCEngine is ReentrancyGuard {
 
     function redeemCollateral() external {}
 
-    function mintDsc() external {}
+    /*
+    * @notice follows CEI
+    * @param amountDscToMint The amount of decentralized stablcoin to mint
+    * @notice they must have more collateral value than the minimum threshold
+    */
+    function mintDsc(uint256 amountDscToMint) external moreThanZero(amountDscToMint) nonReentrant {
+        sDSCMinted[msg.sender] += amountDscToMint;
+        // if they minted too much (Rp150.000, Rp100.000 ETH)
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
 
     function burnDsc() external {}
 
     function liquidate() external {}
 
     function getHealthFactor() external view {}
+
+    ////////////////////////////////////////
+    // Private & Internal View Functions  //
+    ////////////////////////////////////////
+    function _getAccountInformation(address user) private view returns (uint256 totalDscMinted, uint256 collateralValueInIdr) {
+        totalDscMinted = sDSCMinted[user];
+        collateralValueInIdr = getAccountCollateralValue(user);
+    }
+
+    /*
+    * Returns how close to liquidation a user is
+    * If a user goes below 1, then they can get liquidation
+    */
+    function _healthFactor(address user) private view returns(uint256) {
+        // total DSC minted
+        // total collateral VALUE
+        (uint256 totalDscMinted, uint256 collateralValueInIdr) = _getAccountInformation(user);
+
+    }
+
+    function _revertIfHealthFactorIsBroken(address user) internal view {
+        // 1. Check health factor (do they have enough collateral?)
+        // 2. Revert if they don't
+
+    }
+
+    ////////////////////////////////////////
+    // Public & External View Functions   //
+    ////////////////////////////////////////
+    function getAccountCollateralValue(address user) public view returns(uint256 totalCollateralValueInIdr) {
+        // loop thorugh each collateral token, get the amount they have deposited, and map it to the price, to get the IDR value
+        for(uint256 i = 0; i < sCollateralTokens.length; i++) {
+            address token = sCollateralTokens[i];
+            uint256 amount = sCollateralDeposited[user][token];
+            totalCollateralValueInIdr += getIdrValue(token, amount);
+        }
+        return totalCollateralValueInIdr;
+    }
+
+    function getIdrValue(address token, uint256 amount) public view returns(uint256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(sPriceFeeds[token]);
+        (,int256 price,,,) = priceFeed.latestRoundData();
+        // 1 ETH = Rp.16.000.000
+        // The returned value from CL will be 16.000.000 * 1e8
+        return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
+    }
 }
