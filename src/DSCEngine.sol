@@ -1,4 +1,4 @@
-// S// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT
 
 // This is considered an Exogenous, Decentralized, Anchored (pegged), Crypto Collateralized low volitility coin
 
@@ -56,22 +56,26 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__TokenAddressesAndPriceFeedAddressesMustBeSameLength();
     error DSCEngine__NotAllowedToken();
     error DSCEngine__TransferFailed();
+    error DSCEngine__BreaksHealthFactor(uint256 healthFactor);
 
     ///////////////////////
     // State Variables   //
     ///////////////////////
     uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint256 private constant PRECISION = 1e18;
+    uint256 private constant LIQUIDATION_THRESHOLD = 50; // 200% overcollateralized
+    uint256 private constant LIQUIDATION_PRECISION = 100;
+    uint256 private constant MIN_HEALTH_FACTOR = 1;
 
     mapping(address token => address priceFeed) private sPriceFeeds; // tokenToPriceFeed
     mapping(address user => mapping(address token => uint256 amount)) private sCollateralDeposited; // userToTokenToAmount
-    mapping(address user => uint256 amountDscMinted) private sDSCMinted;
+    mapping(address user => uint256 amountDscMinted) private sDscMinted;
     address[] private sCollateralTokens;
 
     address weth;
     address wbtc;
 
-    DecentralizedStableCoin private immutable iDsc;
+    DecentralizedStableCoin private immutable I_DSC;
 
     ///////////////////////
     // Events            //
@@ -82,16 +86,12 @@ contract DSCEngine is ReentrancyGuard {
     // Modifiers         //
     ///////////////////////
     modifier moreThanZero(uint256 amount) {
-        if (amount == 0) {
-            revert DSCEngine__NeedsMoreThanZero();
-        }
+        _moreThanZero(amount);
         _;
     }
 
     modifier isAllowedToken(address token) {
-        if (sPriceFeeds[token] == address(0)) {
-            revert DSCEngine__NotAllowedToken();
-        }
+        _isAllowedToken(token);
         _;
     }
 
@@ -108,7 +108,7 @@ contract DSCEngine is ReentrancyGuard {
             sPriceFeeds[tokenAddresses[i]] = priceFeedAddresses[i];
             sCollateralTokens.push(tokenAddresses[i]);
         }
-        iDsc = DecentralizedStableCoin(dscAddress);
+        I_DSC = DecentralizedStableCoin(dscAddress);
     }
 
     ////////////////////////
@@ -146,7 +146,7 @@ contract DSCEngine is ReentrancyGuard {
     * @notice they must have more collateral value than the minimum threshold
     */
     function mintDsc(uint256 amountDscToMint) external moreThanZero(amountDscToMint) nonReentrant {
-        sDSCMinted[msg.sender] += amountDscToMint;
+        sDscMinted[msg.sender] += amountDscToMint;
         // if they minted too much (Rp150.000, Rp100.000 ETH)
         _revertIfHealthFactorIsBroken(msg.sender);
     }
@@ -158,10 +158,24 @@ contract DSCEngine is ReentrancyGuard {
     function getHealthFactor() external view {}
 
     ////////////////////////////////////////
-    // Private & Internal View Functions  //
+    // Private & Internal Functions       //
     ////////////////////////////////////////
+    
+    // Internal functions for modifiers to save gas
+    function _moreThanZero(uint256 amount) internal pure {
+        if (amount == 0) {
+            revert DSCEngine__NeedsMoreThanZero();
+        }
+    }
+
+    function _isAllowedToken(address token) internal view {
+        if (sPriceFeeds[token] == address(0)) {
+            revert DSCEngine__NotAllowedToken();
+        }
+    }
+
     function _getAccountInformation(address user) private view returns (uint256 totalDscMinted, uint256 collateralValueInIdr) {
-        totalDscMinted = sDSCMinted[user];
+        totalDscMinted = sDscMinted[user];
         collateralValueInIdr = getAccountCollateralValue(user);
     }
 
@@ -170,16 +184,22 @@ contract DSCEngine is ReentrancyGuard {
     * If a user goes below 1, then they can get liquidation
     */
     function _healthFactor(address user) private view returns(uint256) {
-        // total DSC minted
-        // total collateral VALUE
         (uint256 totalDscMinted, uint256 collateralValueInIdr) = _getAccountInformation(user);
+        
+        // Return max if no DSC minted (prevent divide by zero)
+        if (totalDscMinted == 0) return type(uint256).max;
 
+        uint256 collateralAdjustedForThreshold = (collateralValueInIdr * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+        return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
     }
 
+    // 1. Check health factor (do they have enough collateral?)
+    // 2. Revert if they don't
     function _revertIfHealthFactorIsBroken(address user) internal view {
-        // 1. Check health factor (do they have enough collateral?)
-        // 2. Revert if they don't
-
+        uint256 userHealthFactor = _healthFactor(user);
+        if (userHealthFactor < MIN_HEALTH_FACTOR) {
+            revert DSCEngine__BreaksHealthFactor(userHealthFactor);
+        }
     }
 
     ////////////////////////////////////////
@@ -200,6 +220,8 @@ contract DSCEngine is ReentrancyGuard {
         (,int256 price,,,) = priceFeed.latestRoundData();
         // 1 ETH = Rp.16.000.000
         // The returned value from CL will be 16.000.000 * 1e8
+        
+        // forge-lint: disable-next-line(unsafe-typecast)
         return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
     }
 }
