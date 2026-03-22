@@ -77,6 +77,9 @@ contract DSCEngine is ReentrancyGuard {
     address wbtc;
 
     DecentralizedStableCoin private immutable I_DSC;
+    
+    // Variabel baru untuk Chainlink USD/IDR Price Feed
+    AggregatorV3Interface private sUsdIdrPriceFeed; 
 
     ///////////////////////
     // Events            //
@@ -99,17 +102,25 @@ contract DSCEngine is ReentrancyGuard {
     ///////////////////////
     // Functions         //
     ///////////////////////
-    constructor(address[] memory tokenAddresses, address[] memory priceFeedAddresses, address dscAddress) {
+    constructor(
+        address[] memory tokenAddresses, 
+        address[] memory priceFeedAddresses, 
+        address dscAddress, 
+        address usdIdrPriceFeedAddress // <-- Parameter baru ditambahkan di sini
+    ) {
         // IDR Price Feeds
         if (tokenAddresses.length != priceFeedAddresses.length) {
             revert DSCEngine__TokenAddressesAndPriceFeedAddressesMustBeSameLength();
         }
-        // For example ETH / IDR, BTC / IDR, etc
+        // For example ETH / USD, BTC / USD, etc
         for (uint256 i = 0; i < tokenAddresses.length; i++) {
             sPriceFeeds[tokenAddresses[i]] = priceFeedAddresses[i];
             sCollateralTokens.push(tokenAddresses[i]);
         }
         I_DSC = DecentralizedStableCoin(dscAddress);
+        
+        // Inisialisasi kontrak oracle USD/IDR
+        sUsdIdrPriceFeed = AggregatorV3Interface(usdIdrPriceFeedAddress);
     }
 
     ////////////////////////
@@ -147,13 +158,17 @@ contract DSCEngine is ReentrancyGuard {
     * @notice they must have more collateral value than the minimum threshold
     */
     function mintDsc(uint256 amountDscToMint) external moreThanZero(amountDscToMint) nonReentrant {
+        // Checks/Effects
         sDscMinted[msg.sender] += amountDscToMint;
-        // if they minted too much (Rp150.000, Rp100.000 ETH)
-        _revertIfHealthFactorIsBroken(msg.sender);
+        
+        // Interactions
         bool minted = I_DSC.mint(msg.sender, amountDscToMint);
         if (!minted) {
             revert DSCEngine__MintFailed();
         }
+        
+        // Cek Health Factor di akhir setelah token benar-benar di-mint
+        _revertIfHealthFactorIsBroken(msg.sender);
     }
 
     function burnDsc() external {}
@@ -221,12 +236,18 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     function getIdrValue(address token, uint256 amount) public view returns(uint256) {
-        AggregatorV3Interface priceFeed = AggregatorV3Interface(sPriceFeeds[token]);
-        (,int256 price,,,) = priceFeed.latestRoundData();
-        // 1 ETH = Rp.16.000.000
-        // The returned value from CL will be 16.000.000 * 1e8
-        
+        // 1. Dapatkan harga Token ke USD (misal: ETH/USD) -> 8 desimal
+        AggregatorV3Interface tokenUsdFeed = AggregatorV3Interface(sPriceFeeds[token]);
+        (,int256 tokenUsdPrice,,,) = tokenUsdFeed.latestRoundData();
+
+        // 2. Dapatkan harga USD ke IDR -> 8 desimal
+        (,int256 usdIdrPrice,,,) = sUsdIdrPriceFeed.latestRoundData();
+
+        // 3. Kalikan keduanya dan bagi dengan 1e8 untuk menjaga presisi tetap 8 desimal.
         // forge-lint: disable-next-line(unsafe-typecast)
-        return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
+        uint256 tokenIdrPrice = (uint256(tokenUsdPrice) * uint256(usdIdrPrice)) / 1e8;
+
+        // 4. Hitung total nilai (kalikan dengan amount dan bawa ke presisi 18 desimal)
+        return ((tokenIdrPrice * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
     }
 }
