@@ -77,14 +77,15 @@ contract DSCEngine is ReentrancyGuard {
     address wbtc;
 
     DecentralizedStableCoin private immutable I_DSC;
-    
+
     // Variabel baru untuk Chainlink USD/IDR Price Feed
-    AggregatorV3Interface private sUsdIdrPriceFeed; 
+    AggregatorV3Interface private sUsdIdrPriceFeed;
 
     ///////////////////////
     // Events            //
     ///////////////////////
     event CollateralDeposited(address indexed user, address indexed token, uint256 indexed amount);
+    event CollateralRedeemed(address indexed user, address indexed token, uint256 indexed amount);
 
     ///////////////////////
     // Modifiers         //
@@ -103,9 +104,9 @@ contract DSCEngine is ReentrancyGuard {
     // Functions         //
     ///////////////////////
     constructor(
-        address[] memory tokenAddresses, 
-        address[] memory priceFeedAddresses, 
-        address dscAddress, 
+        address[] memory tokenAddresses,
+        address[] memory priceFeedAddresses,
+        address dscAddress,
         address usdIdrPriceFeedAddress // <-- Parameter baru ditambahkan di sini
     ) {
         // IDR Price Feeds
@@ -118,7 +119,7 @@ contract DSCEngine is ReentrancyGuard {
             sCollateralTokens.push(tokenAddresses[i]);
         }
         I_DSC = DecentralizedStableCoin(dscAddress);
-        
+
         // Inisialisasi kontrak oracle USD/IDR
         sUsdIdrPriceFeed = AggregatorV3Interface(usdIdrPriceFeedAddress);
     }
@@ -132,7 +133,11 @@ contract DSCEngine is ReentrancyGuard {
     * @aram amountDscToMint: The amount of DecentralizedStableCoin to mint
     * @notice: This function will deposit your collateral and mint DSC in one transaction
     */
-    function depositCollateralAndMintDsc(address tokenCollateralAddress, uint256 amountCollateral, uint256 amountDscToMint) external {
+    function depositCollateralAndMintDsc(
+        address tokenCollateralAddress,
+        uint256 amountCollateral,
+        uint256 amountDscToMint
+    ) external {
         depositCollateral(tokenCollateralAddress, amountCollateral);
         mintDsc(amountDscToMint);
     }
@@ -153,13 +158,37 @@ contract DSCEngine is ReentrancyGuard {
         bool success = IERC20(tokenCollateralAddress).transferFrom(msg.sender, address(this), amountCollateral);
 
         if (!success) {
-          revert DSCEngine__TransferFailed();
+            revert DSCEngine__TransferFailed();
         }
     }
 
-    function redeemCollateralForDsc() external {}
+    /*
+    * @param tokenCollateralAddress: the collateral address to redeem
+    * @param amountCollateral: amount of collateral to redeem
+    * @param amountDscToBurn: amount of DSC to burn
+    * This function burns DSC and redeems underlying collateral in one transaction
+    */
+    function redeemCollateralForDsc(address tokenCollateralAddress, uint256 amountCollateral, uint256 amountDscToBurn) external {
+        burnDsc(amountDscToBurn);
+        redeemCollateral(tokenCollateralAddress, amountCollateral);
+    }
 
-    function redeemCollateral() external {}
+    function redeemCollateral(address tokenCollateralAddress, uint256 amountCollateral)
+        external
+        moreThanZero(amountCollateral)
+        nonReentrant
+    {
+        sCollateralDeposited[msg.sender][tokenCollateralAddress] -= amountCollateral;
+        emit CollateralRedeemed(msg.sender, tokenCollateralAddress, amountCollateral);
+
+        bool success = IERC20(tokenCollateralAddress).transfer(msg.sender, amountCollateral);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+
+        // Cek Health Factor di akhir setelah token benar-benar di-redeem
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
 
     /*
     * @notice follows CEI
@@ -169,18 +198,27 @@ contract DSCEngine is ReentrancyGuard {
     function mintDsc(uint256 amountDscToMint) external moreThanZero(amountDscToMint) nonReentrant {
         // Checks/Effects
         sDscMinted[msg.sender] += amountDscToMint;
-        
+
         // Interactions
         bool minted = I_DSC.mint(msg.sender, amountDscToMint);
         if (!minted) {
             revert DSCEngine__MintFailed();
         }
-        
+
         // Cek Health Factor di akhir setelah token benar-benar di-mint
         _revertIfHealthFactorIsBroken(msg.sender);
     }
 
-    function burnDsc() external {}
+    function burnDsc(uint256 amount) external moreThanZero(amount) {
+        sDscMinted[msg.sender] -= amount;
+        bool success = I_DSC.transferFrom(msg.sender, address(this), amount);
+
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+        I_DSC.burn(amount);
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
 
     function liquidate() external {}
 
@@ -189,7 +227,7 @@ contract DSCEngine is ReentrancyGuard {
     ////////////////////////////////////////
     // Private & Internal Functions       //
     ////////////////////////////////////////
-    
+
     // Internal functions for modifiers to save gas
     function _moreThanZero(uint256 amount) internal pure {
         if (amount == 0) {
@@ -203,7 +241,11 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
-    function _getAccountInformation(address user) private view returns (uint256 totalDscMinted, uint256 collateralValueInIdr) {
+    function _getAccountInformation(address user)
+        private
+        view
+        returns (uint256 totalDscMinted, uint256 collateralValueInIdr)
+    {
         totalDscMinted = sDscMinted[user];
         collateralValueInIdr = getAccountCollateralValue(user);
     }
@@ -212,9 +254,9 @@ contract DSCEngine is ReentrancyGuard {
     * Returns how close to liquidation a user is
     * If a user goes below 1, then they can get liquidation
     */
-    function _healthFactor(address user) private view returns(uint256) {
+    function _healthFactor(address user) private view returns (uint256) {
         (uint256 totalDscMinted, uint256 collateralValueInIdr) = _getAccountInformation(user);
-        
+
         // Return max if no DSC minted (prevent divide by zero)
         if (totalDscMinted == 0) return type(uint256).max;
 
@@ -234,9 +276,9 @@ contract DSCEngine is ReentrancyGuard {
     ////////////////////////////////////////
     // Public & External View Functions   //
     ////////////////////////////////////////
-    function getAccountCollateralValue(address user) public view returns(uint256 totalCollateralValueInIdr) {
+    function getAccountCollateralValue(address user) public view returns (uint256 totalCollateralValueInIdr) {
         // loop thorugh each collateral token, get the amount they have deposited, and map it to the price, to get the IDR value
-        for(uint256 i = 0; i < sCollateralTokens.length; i++) {
+        for (uint256 i = 0; i < sCollateralTokens.length; i++) {
             address token = sCollateralTokens[i];
             uint256 amount = sCollateralDeposited[user][token];
             totalCollateralValueInIdr += getIdrValue(token, amount);
@@ -244,13 +286,13 @@ contract DSCEngine is ReentrancyGuard {
         return totalCollateralValueInIdr;
     }
 
-    function getIdrValue(address token, uint256 amount) public view returns(uint256) {
+    function getIdrValue(address token, uint256 amount) public view returns (uint256) {
         // 1. Dapatkan harga Token ke USD (misal: ETH/USD) -> 8 desimal
         AggregatorV3Interface tokenUsdFeed = AggregatorV3Interface(sPriceFeeds[token]);
-        (,int256 tokenUsdPrice,,,) = tokenUsdFeed.latestRoundData();
+        (, int256 tokenUsdPrice,,,) = tokenUsdFeed.latestRoundData();
 
         // 2. Dapatkan harga USD ke IDR -> 8 desimal
-        (,int256 usdIdrPrice,,,) = sUsdIdrPriceFeed.latestRoundData();
+        (, int256 usdIdrPrice,,,) = sUsdIdrPriceFeed.latestRoundData();
 
         // 3. Kalikan keduanya dan bagi dengan 1e8 untuk menjaga presisi tetap 8 desimal.
         // forge-lint: disable-next-line(unsafe-typecast)
