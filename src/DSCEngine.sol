@@ -381,4 +381,12 @@ contract DSCEngine is ReentrancyGuard {
         // 4. Lakukan pembagian yang benar (Rupiah dibagi dengan harga Rupiah)
         return (idrAmountInWei * PRECISION) / (tokenIdrPrice * ADDITIONAL_FEED_PRECISION);
     }
+
+    function getCollateralBalanceOfUser(address user, address token) external view returns (uint256) {
+        return sCollateralDeposited[user][token];
+    }
+    
+    function getAccountInformation(address user) external view returns (uint256 totalDscMinted, uint256 collateralValueInIdr) {
+        return _getAccountInformation(user);
+    }
 }
