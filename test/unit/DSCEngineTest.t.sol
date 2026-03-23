@@ -6,7 +6,7 @@ import {DSCEngine} from "src/DSCEngine.sol";
 import {DecentralizedStableCoin} from "src/DecentralizedStableCoin.sol";
 import {DeployDSC} from "script/DeployDSC.s.sol";
 import {HelperConfig} from "script/HelperConfig.s.sol";
-import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
+import {ERC20Mock} from "test/mocks/ERC20Mock.sol";
 import {DSCEngine} from "src/DSCEngine.sol";
 
 contract DSCEngineTest is Test {
@@ -79,13 +79,13 @@ contract DSCEngineTest is Test {
 
     function testGetTokenAmountFromIdr() public view {
         // Ini mensimulasikan nilai Rp 1.500.000 (tulis dalam 18 desimal / ether)
-        uint256 idrAmount = 1500000 ether; 
-        
+        uint256 idrAmount = 1500000 ether;
+
         // Rp 1.500.000 / Rp 30.000.000 (Harga 1 ETH) = 0.05 ETH
         uint256 expectedWeth = 0.05 ether;
-        
+
         uint256 actualWeth = dsce.getTokenAmountFromIdr(weth, idrAmount);
-        
+
         assertEq(expectedWeth, actualWeth);
     }
 
@@ -101,13 +101,21 @@ contract DSCEngineTest is Test {
         vm.stopPrank();
     }
 
+    function testRevertsWithUnapprovedCollateral() public {
+        ERC20Mock randToken = new ERC20Mock("RAN", "RAN", user, 100e18);
+        vm.startPrank(user);
+        vm.expectRevert(DSCEngine.DSCEngine__NotAllowedToken.selector);
+        dsce.depositCollateral(address(randToken), AMOUNT_COLLATERAL);
+        vm.stopPrank();
+    }
+
     // 1. Test mengecek apakah data per-token benar
     function testCanDepositCollateralAndCheckBalance() public depositedCollateral {
         // Karena kita pakai modifier 'depositedCollateral', di titik ini user SUDAH deposit 10 ether WETH.
-        
+
         // Cek saldo user menggunakan fungsi external view yang baru saja kita buat
         uint256 userBalance = dsce.getCollateralBalanceOfUser(user, weth);
-        
+
         // Pastikan saldonya benar-benar 10 ether
         assertEq(userBalance, AMOUNT_COLLATERAL);
     }
@@ -115,7 +123,7 @@ contract DSCEngineTest is Test {
     // 2. Test mengecek apakah total akun (mint & nilai jaminan) ter-update
     function testCanDepositCollateralAndGetAccountInfo() public depositedCollateral {
         (uint256 totalDscMinted, uint256 collateralValueInIdr) = dsce.getAccountInformation(user);
-        
+
         // Dapatkan jumlah token dari nilai IDR tersebut
         uint256 expectedDepositedAmount = dsce.getTokenAmountFromIdr(weth, collateralValueInIdr);
 

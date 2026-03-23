@@ -89,7 +89,9 @@ contract DSCEngine is ReentrancyGuard {
     ///////////////////////
     event CollateralDeposited(address indexed user, address indexed token, uint256 indexed amount);
     // event CollateralRedeemed(address indexed user, address indexed token, uint256 indexed amount);
-    event CollateralRedeemed(address indexed redeemedFrom, address indexed redeemedTo, address indexed token, uint256 amount);
+    event CollateralRedeemed(
+        address indexed redeemedFrom, address indexed redeemedTo, address indexed token, uint256 amount
+    );
 
     ///////////////////////
     // Modifiers         //
@@ -173,7 +175,9 @@ contract DSCEngine is ReentrancyGuard {
     * This function burns DSC and redeems underlying collateral in one transaction
     */
     function redeemCollateralForDsc(address tokenCollateralAddress, uint256 amountCollateral, uint256 amountDscToBurn)
-        external moreThanZero(amountCollateral) isAllowedToken(tokenCollateralAddress)
+        external
+        moreThanZero(amountCollateral)
+        isAllowedToken(tokenCollateralAddress)
     {
         _burnDsc(amountDscToBurn, msg.sender, msg.sender);
         _redeemCollateral(tokenCollateralAddress, amountCollateral, msg.sender, msg.sender);
@@ -242,7 +246,11 @@ contract DSCEngine is ReentrancyGuard {
     anyone.
     * For example, if the price of the collateral plummeted before anyone could be liquidated.
     */
-    function liquidate(address collateral, address user, uint256 debtToCover) external moreThanZero(debtToCover) nonReentrant{
+    function liquidate(address collateral, address user, uint256 debtToCover)
+        external
+        moreThanZero(debtToCover)
+        nonReentrant
+    {
         uint256 startingUserHealthFactor = _healthFactor(user);
         if (startingUserHealthFactor < MIN_HEALTH_FACTOR) {
             revert DSCEngine__HealthFactorOk();
@@ -316,7 +324,9 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
-    function _redeemCollateral(address tokenCollateralAddress, uint256 amountCollateral, address from, address to) private {
+    function _redeemCollateral(address tokenCollateralAddress, uint256 amountCollateral, address from, address to)
+        private
+    {
         sCollateralDeposited[from][tokenCollateralAddress] -= amountCollateral;
         emit CollateralRedeemed(from, to, tokenCollateralAddress, amountCollateral);
 
@@ -335,6 +345,16 @@ contract DSCEngine is ReentrancyGuard {
             revert DSCEngine__TransferFailed();
         }
         I_DSC.burn(amountDscToBurn);
+    }
+
+    function _calculateHealthFactor(uint256 totalDscMinted, uint256 collateralValueInUsd)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (totalDscMinted == 0) return type(uint256).max;
+        uint256 collateralAdjustedForThreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+        return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
     }
 
     ////////////////////////////////////////
@@ -385,8 +405,52 @@ contract DSCEngine is ReentrancyGuard {
     function getCollateralBalanceOfUser(address user, address token) external view returns (uint256) {
         return sCollateralDeposited[user][token];
     }
-    
-    function getAccountInformation(address user) external view returns (uint256 totalDscMinted, uint256 collateralValueInIdr) {
+
+    function getAccountInformation(address user)
+        external
+        view
+        returns (uint256 totalDscMinted, uint256 collateralValueInIdr)
+    {
         return _getAccountInformation(user);
+    }
+
+    function getPrecision() external pure returns (uint256) {
+        return PRECISION;
+    }
+
+    function getAdditionalFeedPrecision() external pure returns (uint256) {
+        return ADDITIONAL_FEED_PRECISION;
+    }
+
+    function getLiquidationThreshold() external pure returns (uint256) {
+        return LIQUIDATION_THRESHOLD;
+    }
+
+    function getLiquidationBonus() external pure returns (uint256) {
+        return LIQUIDATION_BONUS;
+    }
+
+    function getLiquidationPrecision() external pure returns (uint256) {
+        return LIQUIDATION_PRECISION;
+    }
+
+    function getMinHealthFactor() external pure returns (uint256) {
+        return MIN_HEALTH_FACTOR;
+    }
+
+    function getCollateralTokens() external view returns (address[] memory) {
+        return sCollateralTokens;
+    }
+
+    function getDsc() external view returns (address) {
+        return address(I_DSC);
+    }
+
+    function getCollateralTokenPriceFeed(address token) external view returns (address) {
+        return sPriceFeeds[token];
+    }
+
+    function getHealthFactor(address user) external view returns (uint256) {
+        return _healthFactor(user);
     }
 }
