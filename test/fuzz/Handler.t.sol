@@ -16,7 +16,9 @@ contract Handler is Test {
   ERC20Mock weth;
   ERC20Mock wbtc;
 
-  uint256 constant MAX_DEPOSIT_SIZE = type(uint96).max;
+  uint256 private constant MAX_DEPOSIT_SIZE = type(uint96).max;
+  
+  uint256 public timesMintIsCalled;
 
   constructor(DSCEngine _engine, DecentralizedStableCoin _dsc) {
     dsce = _engine;
@@ -75,6 +77,8 @@ contract Handler is Test {
     vm.startPrank(msg.sender);
     dsce.mintDsc(amount);
     vm.stopPrank();
+
+    timesMintIsCalled++;
   }
 
   // Helper Functions
