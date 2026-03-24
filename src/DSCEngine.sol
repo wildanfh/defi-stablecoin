@@ -28,8 +28,8 @@ pragma solidity ^0.8.19;
 import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {OracleLib} from "./libraries/OracleLib.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
-
 /*
  * @title DSCEngine
  * @author Wildanf
@@ -60,6 +60,11 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__MintFailed();
     error DSCEngine__HealthFactorOk();
     error DSCEngine__HealthFactorNotImproved();
+
+    ///////////
+    // Types //
+    ///////////
+    using OracleLib for AggregatorV3Interface;
 
     ///////////////////////
     // State Variables   //
@@ -357,6 +362,18 @@ contract DSCEngine is ReentrancyGuard {
         return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
     }
 
+    function _getIdrValue(address token, uint256 amount) private view returns (uint256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(sPriceFeeds[token]);
+        (, int256 price,,,) = priceFeed.staleCheckLatestRoundData();
+
+        // Contoh: 1 ETH = 30.000.000 IDR
+        // Chainlink IDR pairs biasanya memiliki 8 decimals (sama seperti USD).
+        // Jadi price yang dikembalikan adalah 30000000 * 1e8
+
+        // Kita tambahkan 10 desimal (ADDITIONAL_FEED_PRECISION) agar menjadi 18 desimal (Wei)
+        return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
+    }
+
     ////////////////////////////////////////
     // Public & External View Functions   //
     ////////////////////////////////////////
@@ -387,18 +404,13 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     function getTokenAmountFromIdr(address token, uint256 idrAmountInWei) public view returns (uint256) {
-        // 1. Ambil harga Token ke USD
         AggregatorV3Interface tokenUsdFeed = AggregatorV3Interface(sPriceFeeds[token]);
-        (, int256 tokenUsdPrice,,,) = tokenUsdFeed.latestRoundData();
+        (, int256 tokenUsdPrice,,,) = tokenUsdFeed.staleCheckLatestRoundData();
 
-        // 2. Ambil harga USD ke IDR
-        (, int256 usdIdrPrice,,,) = sUsdIdrPriceFeed.latestRoundData();
+        (, int256 usdIdrPrice,,,) = sUsdIdrPriceFeed.staleCheckLatestRoundData();
 
-        // 3. Kalikan untuk dapat harga Token dalam IDR (dalam 8 desimal)
-        // forge-lint: disable-next-line(unsafe-typecast)
         uint256 tokenIdrPrice = (uint256(tokenUsdPrice) * uint256(usdIdrPrice)) / 1e8;
 
-        // 4. Lakukan pembagian yang benar (Rupiah dibagi dengan harga Rupiah)
         return (idrAmountInWei * PRECISION) / (tokenIdrPrice * ADDITIONAL_FEED_PRECISION);
     }
 
